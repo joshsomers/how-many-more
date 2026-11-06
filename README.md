@@ -1,0 +1,46 @@
+# How Many More
+
+How many more laps to 70 Agility? How many more sharks to 99 Fishing? Set a skill goal and the method you're training
+with, and a small box on screen counts down the catches, laps or other actions you have left, with every XP drop.
+
+<p align="center">
+  <img src="docs/screenshot.png" width="431" alt="The on-screen goal box beside the sidebar panel with three goals">
+</p>
+
+## Using it
+
+1. Install **How Many More** from the Plugin Hub.
+2. Open the **How Many More** sidebar panel (the flag icon).
+3. Pick a skill, type a target level (`70`) or an XP amount (`1,500,000` or `1.5m`), and pick a method.
+4. Click **Add goal**. The goal appears on screen and in the sidebar.
+
+You can change a goal's method at any time in its sidebar card, for example moving from Canifis to Seers' Village at 60
+Agility. Goals are saved for each account.
+
+The progress bars shade every other level still to come, so you can see the level-ups ahead.
+
+## Methods
+
+The methods and their XP come from RuneLite's built-in Skill Calculator, so they cover every skill it covers and stay
+current with RuneLite updates. Rooftop courses count full laps. Where the calculator has XP bonuses, like the gilded
+altar for bones or a skilling outfit, you can pick one.
+
+Two choices work for any skill, including the combat skills and Slayer, which the calculator doesn't cover:
+
+- **Custom XP each**: type the XP you get each time.
+- **Auto**: uses the size of your last XP drop in that skill. This doesn't suit agility courses, where each obstacle
+  gives its own drop.
+
+## Settings
+
+- **Show HUD**, **Show progress bar** and **Show XP left**: what the on-screen box shows.
+- **Hide when not training**: hides a goal after this many minutes without XP in its skill. 0 always shows it.
+- **Goal reached notification**: a notification and chat message when you reach a goal.
+
+## Building
+
+```bash
+./gradlew test jar
+```
+
+`./gradlew run` starts RuneLite with the plugin loaded.

@@ -1,0 +1,142 @@
+package com.howmanymore;
+
+import java.util.Locale;
+import net.runelite.api.Experience;
+import net.runelite.api.Skill;
+import net.runelite.client.util.QuantityFormatter;
+
+final class GoalMath
+{
+	// XP per action is shown in tenths in game; this absorbs float noise like 269.7f -> 269.70001.
+	private static final double EPSILON = 1e-6;
+
+	private GoalMath()
+	{
+	}
+
+	static int xpLeft(int currentXp, int targetXp)
+	{
+		return Math.max(0, targetXp - currentXp);
+	}
+
+	// -1 when the XP per action isn't known yet.
+	static int actionsLeft(int xpLeft, double xpEach)
+	{
+		if (xpEach <= 0)
+		{
+			return -1;
+		}
+		return (int) Math.ceil(xpLeft / xpEach - EPSILON);
+	}
+
+	static double progress(int startXp, int currentXp, int targetXp)
+	{
+		if (targetXp <= startXp)
+		{
+			return 1;
+		}
+		double progress = (double) (currentXp - startXp) / (targetXp - startXp);
+		return Math.max(0, Math.min(1, progress));
+	}
+
+	// The level whose XP is exactly targetXp, or 0 for a plain XP target.
+	static int targetLevel(int targetXp)
+	{
+		for (int level = 2; level <= Experience.MAX_VIRT_LEVEL; level++)
+		{
+			int xp = Experience.getXpForLevel(level);
+			if (xp == targetXp)
+			{
+				return level;
+			}
+			if (xp > targetXp)
+			{
+				break;
+			}
+		}
+		return 0;
+	}
+
+	static String targetLabel(Skill skill, int targetXp)
+	{
+		int level = targetLevel(targetXp);
+		return level > 0
+			? level + " " + skill.getName()
+			: QuantityFormatter.quantityToStackSize(targetXp) + " " + skill.getName() + " XP";
+	}
+
+	/**
+	 * Reads a goal typed as a level ("70") or an XP amount ("1,500,000", "1.5m", "500k").
+	 * Numbers up to the max virtual level are levels. Returns the target XP, or -1 if the text isn't a valid goal.
+	 */
+	static int parseTarget(String text)
+	{
+		if (text == null)
+		{
+			return -1;
+		}
+
+		String value = text.trim().toLowerCase(Locale.ROOT).replace(",", "").replace(" ", "");
+		double multiplier = 1;
+		if (value.endsWith("k"))
+		{
+			multiplier = 1_000;
+		}
+		else if (value.endsWith("m"))
+		{
+			multiplier = 1_000_000;
+		}
+		if (multiplier > 1)
+		{
+			value = value.substring(0, value.length() - 1);
+		}
+
+		double number;
+		try
+		{
+			number = Double.parseDouble(value);
+		}
+		catch (NumberFormatException e)
+		{
+			return -1;
+		}
+		if (Double.isNaN(number) || number <= 0)
+		{
+			return -1;
+		}
+
+		if (multiplier == 1 && number <= Experience.MAX_VIRT_LEVEL)
+		{
+			if (number != Math.floor(number) || number < 2)
+			{
+				return -1;
+			}
+			return Experience.getXpForLevel((int) number);
+		}
+
+		double xp = Math.round(number * multiplier);
+		return xp > Experience.MAX_SKILL_XP ? -1 : (int) xp;
+	}
+
+	// The XP each typed for a custom goal, or 0 if it isn't a positive number.
+	static double parseXpEach(String text)
+	{
+		try
+		{
+			double xp = Double.parseDouble(text.trim().replace(",", ""));
+			return Double.isNaN(xp) || Double.isInfinite(xp) || xp <= 0 ? 0 : xp;
+		}
+		catch (NumberFormatException e)
+		{
+			return 0;
+		}
+	}
+
+	// "348" or "269.7": up to two decimals, without trailing zeros.
+	static String formatXp(double xp)
+	{
+		String text = String.format(Locale.ROOT, "%.2f", xp);
+		text = text.replaceAll("0+$", "");
+		return text.endsWith(".") ? text.substring(0, text.length() - 1) : text;
+	}
+}
