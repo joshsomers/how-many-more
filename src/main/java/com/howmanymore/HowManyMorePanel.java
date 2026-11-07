@@ -66,8 +66,9 @@ class HowManyMorePanel extends PluginPanel
 
 	private JPanel buildForm()
 	{
+		// Older RuneLite still lists Overall as a skill. Matched by name, since Skill.OVERALL is going away.
 		Skill[] skills = Arrays.stream(Skill.values())
-			.filter(skill -> skill != Skill.OVERALL)
+			.filter(skill -> !"Overall".equals(skill.getName()))
 			.sorted(Comparator.comparing(Skill::getName))
 			.toArray(Skill[]::new);
 		for (Skill skill : skills)
