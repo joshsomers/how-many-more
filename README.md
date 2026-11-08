@@ -36,3 +36,18 @@ Two choices work for any skill, including the combat skills and Slayer, which th
 - **Show HUD**, **Show progress bar** and **Show XP left**: what the on-screen box shows.
 - **Hide when not training**: hides a goal after this many minutes without XP in its skill. 0 always shows it.
 - **Goal reached notification**: a notification and chat message when you reach a goal.
+
+## Say hi
+
+Made by **Krypt0fy** (that's a zero, not an o). Stuck, or your favourite training method is missing? Add me in game.
+
+In case you're wondering, here's my own goal:
+
+```
+Goal:      10,000,000 GP
+Method:    Generous strangers
+Tips left: 9,999,999
+```
+
+Every tip in game knocks a few off the count. No pressure, though. I'll never ask for your password, bank PIN or
+items, and I can't double your money. Nobody can.
