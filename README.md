@@ -14,8 +14,10 @@ with, and a small box on screen counts down the catches, laps or other actions y
 3. Pick a skill, type a target level (`70`) or an XP amount (`1,500,000` or `1.5m`), and pick a method.
 4. Click **Add goal**. The goal appears on screen and in the sidebar.
 
-You can change a goal's method at any time in its sidebar card, for example moving from Canifis to Seers' Village at 60
-Agility. Goals are saved for each account.
+You can change a goal's method at any time in its sidebar card. To plan a switch, like Canifis to 60 Agility and then
+Seers' Village, click **Add next method** and set the level to switch at. The card shows the actions left with each
+method, the on-screen box shows the current method's count as well as the goal's, and a chat message tells you when to
+switch. Goals are saved for each account.
 
 The progress bars shade every other level still to come, so you can see the level-ups ahead.
 
@@ -34,8 +36,13 @@ Two choices work for any skill, including the combat skills and Slayer, which th
 ## Settings
 
 - **Show HUD**, **Show progress bar** and **Show XP left**: what the on-screen box shows.
+- **Show finish time**: the time of day you'll reach a goal at your recent XP/hr, when that's within a day.
+- **Count down**: *Actions* counts the actions left. *Time* shows the time left at your XP/hr over your last 30
+  minutes of training in that skill, not counting breaks over 5 minutes. It shows the actions left until you've
+  trained for 2 minutes.
 - **Hide when not training**: hides a goal after this many minutes without XP in its skill. 0 always shows it.
 - **Goal reached notification**: a notification and chat message when you reach a goal.
+- **Goal reached summary**: adds the XP gained, training time and XP/hr to that chat message.
 
 ## Say hi
 

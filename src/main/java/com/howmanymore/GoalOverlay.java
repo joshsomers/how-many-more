@@ -6,6 +6,7 @@ import java.awt.Graphics2D;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 import net.runelite.api.Experience;
 import net.runelite.client.game.SkillIconManager;
@@ -72,24 +73,41 @@ class GoalOverlay extends OverlayPanel
 
 	private void addGoal(GoalStatus status)
 	{
-		LayoutableRenderableEntity text = SplitComponent.builder()
-			.first(LineComponent.builder()
-				.left(status.getMethodName() != null ? status.getMethodName() : status.getSkill().getName())
-				.build())
-			.second(countLine(status))
-			.orientation(ComponentOrientation.VERTICAL)
+		LayoutableRenderableEntity text = LineComponent.builder()
+			.left(status.getMethodName() != null ? status.getMethodName() : status.getSkill().getName())
 			.build();
+
+		if (status.hasNextStage())
+		{
+			LineComponent stageLine = remainingLine(status.getStage().getEndXp(), status.getStage().getActionsLeft(),
+				status.getStageMillisLeft(), status);
+			text = below(text, stageLine != null ? stageLine : hintLine(status));
+			LineComponent goalLine = remainingLine(status.getGoal().getTargetXp(), status.getActionsLeft(),
+				status.getMillisLeft(), status);
+			if (goalLine != null)
+			{
+				text = below(text, goalLine);
+			}
+		}
+		else
+		{
+			text = below(text, countLine(status));
+		}
 
 		if (config.showXpLeft() && !status.isReached())
 		{
-			text = SplitComponent.builder()
-				.first(text)
-				.second(LineComponent.builder()
-					.left("XP left")
-					.right(QuantityFormatter.formatNumber(status.getXpLeft()))
-					.build())
-				.orientation(ComponentOrientation.VERTICAL)
-				.build();
+			text = below(text, LineComponent.builder()
+				.left("XP left")
+				.right(QuantityFormatter.formatNumber(status.getXpLeft()))
+				.build());
+		}
+
+		if (status.isFinishShown() && status.getFinishAtMillis() >= 0)
+		{
+			text = below(text, LineComponent.builder()
+				.left("Done at")
+				.right(GoalMath.formatClock(status.getFinishAtMillis(), System.currentTimeMillis()))
+				.build());
 		}
 
 		panelComponent.getChildren().add(SplitComponent.builder()
@@ -111,14 +129,46 @@ class GoalOverlay extends OverlayPanel
 		{
 			return LineComponent.builder().left("Goal reached!").leftColor(REACHED_COLOR).build();
 		}
-		if (status.getActionsLeft() < 0)
+		LineComponent line = remainingLine(status.getGoal().getTargetXp(), status.getActionsLeft(), status.getMillisLeft(),
+			status);
+		return line != null ? line : hintLine(status);
+	}
+
+	// "To 70" and the time or actions left to it, or null when neither is known yet.
+	@Nullable
+	private static LineComponent remainingLine(int toXp, int actionsLeft, long millisLeft, GoalStatus status)
+	{
+		String remaining;
+		if (status.isTimeMode() && millisLeft >= 0)
 		{
-			return LineComponent.builder().left(status.getMissingCountReason()).leftColor(HINT_COLOR).build();
+			remaining = GoalMath.formatDuration(millisLeft);
+		}
+		else if (actionsLeft >= 0)
+		{
+			remaining = QuantityFormatter.formatNumber(actionsLeft);
+		}
+		else
+		{
+			return null;
 		}
 		return LineComponent.builder()
-			.left("To " + shortTarget(status.getGoal().getTargetXp()))
-			.right(QuantityFormatter.formatNumber(status.getActionsLeft()))
+			.left("To " + shortTarget(toXp))
+			.right(remaining)
 			.rightColor(COUNT_COLOR)
+			.build();
+	}
+
+	private static LineComponent hintLine(GoalStatus status)
+	{
+		return LineComponent.builder().left(status.getMissingCountReason()).leftColor(HINT_COLOR).build();
+	}
+
+	private static LayoutableRenderableEntity below(LayoutableRenderableEntity top, LayoutableRenderableEntity bottom)
+	{
+		return SplitComponent.builder()
+			.first(top)
+			.second(bottom)
+			.orientation(ComponentOrientation.VERTICAL)
 			.build();
 	}
 

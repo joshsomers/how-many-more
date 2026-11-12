@@ -8,6 +8,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
@@ -15,6 +17,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.Experience;
 import net.runelite.api.GameState;
 import net.runelite.api.Skill;
 import net.runelite.api.events.GameStateChanged;
@@ -28,6 +31,7 @@ import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.RuneScapeProfileChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SkillIconManager;
@@ -37,6 +41,7 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ImageUtil;
+import net.runelite.client.util.QuantityFormatter;
 
 @Slf4j
 @PluginDescriptor(
@@ -47,6 +52,11 @@ import net.runelite.client.util.ImageUtil;
 public class HowManyMorePlugin extends Plugin
 {
 	private static final String GOALS_KEY = "goals";
+	private static final long FINISH_WITHIN_MILLIS = TimeUnit.DAYS.toMillis(1);
+	// The summary needs at least this much training to give a sensible XP/hr.
+	private static final long SUMMARY_MIN_MILLIS = TimeUnit.MINUTES.toMillis(1);
+	// Training time is saved this often, so closing the client without logging out loses little.
+	private static final int SAVE_EVERY_TICKS = 100;
 
 	@Inject
 	private Client client;
@@ -89,6 +99,14 @@ public class HowManyMorePlugin extends Plugin
 	private final int[] xp = new int[Skill.values().length];
 	private final int[] lastDrop = new int[Skill.values().length];
 	private final long[] lastGainMillis = new long[Skill.values().length];
+	private final XpRate[] rates = new XpRate[Skill.values().length];
+	// Set when training time is added, until the goals are next saved.
+	private boolean unsavedTraining;
+	private int ticksSinceSave;
+
+	{
+		Arrays.setAll(rates, skill -> new XpRate());
+	}
 
 	// False until the first tick after login, when the login stats have arrived.
 	@Getter
@@ -124,6 +142,8 @@ public class HowManyMorePlugin extends Plugin
 
 		clientThread.invoke(() ->
 		{
+			// Rates are only touched on the client thread.
+			resetRates();
 			// Item-based method names need the game cache, which is loaded by the login screen.
 			if (client.getGameState().getState() < GameState.LOGIN_SCREEN.getState())
 			{
@@ -154,9 +174,26 @@ public class HowManyMorePlugin extends Plugin
 		clientToolbar.removeNavigation(navigationButton);
 		navigationButton = null;
 		panel = null;
-		goals.clear();
-		statuses = Collections.emptyList();
-		statsReady = false;
+		clientThread.invoke(() ->
+		{
+			if (unsavedTraining)
+			{
+				saveGoals();
+			}
+			goals.clear();
+			statuses = Collections.emptyList();
+			statsReady = false;
+		});
+	}
+
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event)
+	{
+		if (HowManyMoreConfig.GROUP.equals(event.getGroup())
+			&& (HowManyMoreConfig.COUNT_DOWN_KEY.equals(event.getKey()) || HowManyMoreConfig.FINISH_TIME_KEY.equals(event.getKey())))
+		{
+			clientThread.invoke(this::refresh);
+		}
 	}
 
 	@Subscribe
@@ -174,9 +211,14 @@ public class HowManyMorePlugin extends Plugin
 	{
 		if (event.getGameState() == GameState.LOGIN_SCREEN)
 		{
+			if (unsavedTraining)
+			{
+				saveGoals();
+			}
 			statsReady = false;
 			Arrays.fill(lastDrop, 0);
 			Arrays.fill(lastGainMillis, 0);
+			resetRates();
 			refresh();
 		}
 	}
@@ -189,6 +231,15 @@ public class HowManyMorePlugin extends Plugin
 			readAllStats();
 			checkReached();
 			refresh();
+		}
+
+		if (++ticksSinceSave >= SAVE_EVERY_TICKS)
+		{
+			ticksSinceSave = 0;
+			if (unsavedTraining)
+			{
+				saveGoals();
+			}
 		}
 	}
 
@@ -204,11 +255,19 @@ public class HowManyMorePlugin extends Plugin
 			return;
 		}
 
-		lastGainMillis[skill] = System.currentTimeMillis();
+		long now = System.currentTimeMillis();
+		long sinceGain = now - lastGainMillis[skill];
+		if (lastGainMillis[skill] != 0 && sinceGain <= XpRate.BREAK_MILLIS)
+		{
+			addTraining(event.getSkill(), sinceGain);
+		}
+		lastGainMillis[skill] = now;
 		// XP reads 0 before the login stats arrive, so don't count that jump as one action.
 		if (previous > 0)
 		{
 			lastDrop[skill] = gained;
+			rates[skill].gain(now, gained);
+			announceNextStages(event.getSkill(), previous, event.getXp());
 		}
 		checkReached();
 		refresh();
@@ -235,31 +294,103 @@ public class HowManyMorePlugin extends Plugin
 			goal.setSkill(skill);
 			goal.setTargetXp(targetXp);
 			goal.setStartXp(xp[skill.ordinal()]);
-			goal.setMethod(method);
-			goal.setCustomXp(customXp);
-			goal.setBonus(bonus);
+			goal.setStages(new ArrayList<>(Collections.singletonList(new Stage(method, customXp, bonus, 0))));
+			goal.setTrainedMillis(0);
 			goals.add(goal);
 			saveGoals();
 			refresh();
 		});
 	}
 
-	void setMethod(String goalId, String method, double customXp, @Nullable String bonus)
+	void setStageMethod(String goalId, int index, String method, double customXp, @Nullable String bonus)
+	{
+		editStage(goalId, index, stage ->
+		{
+			stage.setMethod(method);
+			stage.setCustomXp(customXp);
+			stage.setBonus(bonus);
+		});
+	}
+
+	void setStageEnd(String goalId, int index, int endLevel)
+	{
+		editStage(goalId, index, stage -> stage.setEndLevel(endLevel));
+	}
+
+	void removeStage(String goalId, int index)
 	{
 		clientThread.invoke(() ->
 		{
-			for (Goal goal : goals)
+			Goal goal = goal(goalId);
+			if (goal != null && goal.getStages().size() > 1 && index < goal.getStages().size())
 			{
-				if (goal.getId().equals(goalId))
-				{
-					goal.setMethod(method);
-					goal.setCustomXp(customXp);
-					goal.setBonus(bonus);
-				}
+				goal.getStages().remove(index);
+				saveGoals();
+				refresh();
+			}
+		});
+	}
+
+	// Adds a method after the last one. The last one then ends where the next method the Skill Calculator lists unlocks.
+	void addStage(String goalId)
+	{
+		clientThread.invoke(() ->
+		{
+			Goal goal = goal(goalId);
+			if (goal == null)
+			{
+				return;
+			}
+
+			List<Stage> stages = goal.getStages();
+			Stage last = stages.get(stages.size() - 1);
+			int startLevel = Math.max(Experience.getLevelForXp(xp[goal.getSkill().ordinal()]),
+				stages.size() > 1 ? stages.get(stages.size() - 2).getEndLevel() : 1);
+			int maxEnd = maxStageEnd(goal.getTargetXp());
+			if (startLevel >= maxEnd)
+			{
+				return;
+			}
+
+			MethodCatalog.Method lastMethod = catalog.method(goal.getSkill(), last.getMethod());
+			MethodCatalog.Method next = nextMethod(goal.getSkill(), lastMethod, startLevel, maxEnd);
+			if (next != null)
+			{
+				last.setEndLevel(next.getLevel());
+				stages.add(new Stage(next.getId(), 0, null, 0));
+			}
+			else
+			{
+				last.setEndLevel((startLevel + maxEnd + 1) / 2);
+				stages.add(new Stage(last.getMethod(), last.getCustomXp(), last.getBonus(), 0));
 			}
 			saveGoals();
 			refresh();
 		});
+	}
+
+	// The highest level a stage before the last can end at: the last level below the goal.
+	static int maxStageEnd(int targetXp)
+	{
+		return Experience.getLevelForXp(Math.max(0, targetXp - 1));
+	}
+
+	// The lowest-level method above the start that gives more XP each than the last one, up to the last stage's end.
+	@Nullable
+	private MethodCatalog.Method nextMethod(Skill skill, @Nullable MethodCatalog.Method after, int startLevel, int maxEnd)
+	{
+		int fromLevel = Math.max(startLevel, after == null ? 0 : after.getLevel());
+		MethodCatalog.Method next = null;
+		for (MethodCatalog.Method method : catalog.methods(skill))
+		{
+			if (method.getLevel() > fromLevel && method.getLevel() <= maxEnd
+				&& (after == null || method.getXp() > after.getXp())
+				&& (next == null || method.getLevel() < next.getLevel()))
+			{
+				next = method;
+			}
+		}
+		return next;
 	}
 
 	void removeGoal(String goalId)
@@ -270,6 +401,95 @@ public class HowManyMorePlugin extends Plugin
 			saveGoals();
 			refresh();
 		});
+	}
+
+	private void editStage(String goalId, int index, Consumer<Stage> edit)
+	{
+		clientThread.invoke(() ->
+		{
+			Goal goal = goal(goalId);
+			if (goal != null && index < goal.getStages().size())
+			{
+				edit.accept(goal.getStages().get(index));
+				saveGoals();
+				refresh();
+			}
+		});
+	}
+
+	@Nullable
+	private Goal goal(String goalId)
+	{
+		for (Goal goal : goals)
+		{
+			if (goal.getId().equals(goalId))
+			{
+				return goal;
+			}
+		}
+		return null;
+	}
+
+	private void addTraining(Skill skill, long millis)
+	{
+		for (Goal goal : goals)
+		{
+			if (goal.getSkill() == skill && !goal.isReached() && goal.getTrainedMillis() >= 0)
+			{
+				goal.setTrainedMillis(goal.getTrainedMillis() + millis);
+				unsavedTraining = true;
+			}
+		}
+	}
+
+	// Says in chat which method to switch to when a stage's end level is passed.
+	private void announceNextStages(Skill skill, int previousXp, int currentXp)
+	{
+		for (Goal goal : goals)
+		{
+			List<Stage> stages = goal.getStages();
+			if (goal.getSkill() != skill || goal.isReached() || stages.size() < 2 || currentXp >= goal.getTargetXp())
+			{
+				continue;
+			}
+
+			int[] ends = StagePlan.endXps(stages, goal.getTargetXp());
+			int next = -1;
+			for (int i = 0; i < ends.length - 1; i++)
+			{
+				if (previousXp < ends[i] && currentXp >= ends[i])
+				{
+					next = i + 1;
+				}
+			}
+			if (next >= 0)
+			{
+				chat("Next method for " + GoalMath.targetLabel(skill, goal.getTargetXp()) + ": "
+					+ methodLabel(skill, stages.get(next)) + ".");
+			}
+		}
+	}
+
+	private String methodLabel(Skill skill, Stage stage)
+	{
+		if (MethodCatalog.CUSTOM.equals(stage.getMethod()))
+		{
+			return GoalMath.formatXp(stage.getCustomXp()) + " XP each";
+		}
+		if (MethodCatalog.AUTO.equals(stage.getMethod()))
+		{
+			return "Auto";
+		}
+		MethodCatalog.Method method = catalog.method(skill, stage.getMethod());
+		return method == null ? "a new method" : method.getName();
+	}
+
+	private void resetRates()
+	{
+		for (XpRate rate : rates)
+		{
+			rate.reset();
+		}
 	}
 
 	private void readAllStats()
@@ -284,7 +504,8 @@ public class HowManyMorePlugin extends Plugin
 		boolean changed = false;
 		for (Goal goal : goals)
 		{
-			if (goal.isReached() || xp[goal.getSkill().ordinal()] < goal.getTargetXp())
+			int current = xp[goal.getSkill().ordinal()];
+			if (goal.isReached() || current < goal.getTargetXp())
 			{
 				continue;
 			}
@@ -293,13 +514,16 @@ public class HowManyMorePlugin extends Plugin
 			changed = true;
 			String message = "Goal reached: " + GoalMath.targetLabel(goal.getSkill(), goal.getTargetXp()) + "!";
 			notifier.notify(config.goalReachedNotification(), message);
-			chatMessageManager.queue(QueuedMessage.builder()
-				.type(ChatMessageType.GAMEMESSAGE)
-				.runeLiteFormattedMessage(new ChatMessageBuilder()
-					.append(ChatColorType.HIGHLIGHT)
-					.append(message)
-					.build())
-				.build());
+			long trained = goal.getTrainedMillis();
+			if (config.goalReachedSummary() && trained >= SUMMARY_MIN_MILLIS)
+			{
+				int gained = current - goal.getStartXp();
+				message += " " + QuantityFormatter.quantityToStackSize(gained) + " XP in "
+					+ GoalMath.formatDuration(trained) + " of training, "
+					+ QuantityFormatter.quantityToStackSize(Math.round(gained * (double) TimeUnit.HOURS.toMillis(1) / trained))
+					+ " XP/hr.";
+			}
+			chat(message);
 		}
 
 		if (changed)
@@ -308,12 +532,24 @@ public class HowManyMorePlugin extends Plugin
 		}
 	}
 
+	private void chat(String message)
+	{
+		chatMessageManager.queue(QueuedMessage.builder()
+			.type(ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(new ChatMessageBuilder()
+				.append(ChatColorType.HIGHLIGHT)
+				.append(message)
+				.build())
+			.build());
+	}
+
 	private void refresh()
 	{
+		long now = System.currentTimeMillis();
 		List<GoalStatus> next = new ArrayList<>(goals.size());
 		for (Goal goal : goals)
 		{
-			next.add(status(goal));
+			next.add(status(goal, now));
 		}
 		statuses = Collections.unmodifiableList(next);
 
@@ -325,34 +561,56 @@ public class HowManyMorePlugin extends Plugin
 		}
 	}
 
-	private GoalStatus status(Goal goal)
+	private GoalStatus status(Goal goal, long now)
 	{
 		Skill skill = goal.getSkill();
-		String methodName = null;
-		double xpEach = 0;
-		if (MethodCatalog.CUSTOM.equals(goal.getMethod()))
+		List<Stage> stages = goal.getStages();
+		int current = xp[skill.ordinal()];
+		int[] ends = StagePlan.endXps(stages, goal.getTargetXp());
+		int currentStage = StagePlan.current(ends, current);
+
+		double[] xpEach = new double[stages.size()];
+		String[] names = new String[stages.size()];
+		for (int i = 0; i < stages.size(); i++)
 		{
-			xpEach = goal.getCustomXp();
-		}
-		else if (MethodCatalog.AUTO.equals(goal.getMethod()))
-		{
-			xpEach = lastDrop[skill.ordinal()];
-		}
-		else
-		{
-			MethodCatalog.Method method = catalog.method(skill, goal.getMethod());
-			if (method != null)
+			Stage stage = stages.get(i);
+			if (MethodCatalog.CUSTOM.equals(stage.getMethod()))
 			{
-				MethodCatalog.Bonus bonus = MethodCatalog.bonus(method, goal.getBonus());
-				methodName = method.getName();
-				xpEach = method.getXp() * (bonus == null ? 1 : bonus.getMultiplier());
+				xpEach[i] = stage.getCustomXp();
+			}
+			else if (MethodCatalog.AUTO.equals(stage.getMethod()))
+			{
+				// The last drop only says something about the method being trained now.
+				xpEach[i] = i == currentStage ? lastDrop[skill.ordinal()] : 0;
+			}
+			else
+			{
+				MethodCatalog.Method method = catalog.method(skill, stage.getMethod());
+				if (method != null)
+				{
+					MethodCatalog.Bonus bonus = MethodCatalog.bonus(method, stage.getBonus());
+					names[i] = method.getName();
+					xpEach[i] = method.getXp() * (bonus == null ? 1 : bonus.getMultiplier());
+				}
 			}
 		}
 
-		int current = xp[skill.ordinal()];
+		int[] actions = StagePlan.actionsLeft(ends, xpEach, current);
+		List<GoalStatus.StageStatus> stageStatuses = new ArrayList<>(stages.size());
+		for (int i = 0; i < stages.size(); i++)
+		{
+			stageStatuses.add(new GoalStatus.StageStatus(names[i], xpEach[i], ends[i], actions[i], current >= ends[i]));
+		}
+
 		int xpLeft = GoalMath.xpLeft(current, goal.getTargetXp());
-		return new GoalStatus(goal.copy(), methodName, xpEach, current, xpLeft, GoalMath.actionsLeft(xpLeft, xpEach),
-			GoalMath.progress(goal.getStartXp(), current, goal.getTargetXp()));
+		double xpPerHour = rates[skill.ordinal()].perHour();
+		long millisLeft = GoalMath.millisLeft(xpLeft, xpPerHour);
+		long stageMillisLeft = GoalMath.millisLeft(GoalMath.xpLeft(current, ends[currentStage]), xpPerHour);
+		long finishAt = !goal.isReached() && millisLeft >= 0 && millisLeft < FINISH_WITHIN_MILLIS ? now + millisLeft : -1;
+		return new GoalStatus(goal.copy(), Collections.unmodifiableList(stageStatuses), currentStage, current, xpLeft,
+			StagePlan.total(actions), GoalMath.progress(goal.getStartXp(), current, goal.getTargetXp()),
+			config.countDown() == HowManyMoreConfig.CountDown.TIME, config.showFinishTime(), xpPerHour, millisLeft,
+			stageMillisLeft, finishAt);
 	}
 
 	private void loadGoals()
@@ -376,6 +634,7 @@ public class HowManyMorePlugin extends Plugin
 				// A skill RuneLite no longer knows reads back as null.
 				if (goal != null && goal.getId() != null && goal.getSkill() != null)
 				{
+					goal.migrate();
 					goals.add(goal);
 				}
 			}
@@ -388,13 +647,16 @@ public class HowManyMorePlugin extends Plugin
 
 	private void saveGoals()
 	{
+		unsavedTraining = false;
 		if (goals.isEmpty())
 		{
 			configManager.unsetRSProfileConfiguration(HowManyMoreConfig.GROUP, GOALS_KEY);
+			return;
 		}
-		else
+		for (Goal goal : goals)
 		{
-			configManager.setRSProfileConfiguration(HowManyMoreConfig.GROUP, GOALS_KEY, gson.toJson(goals));
+			goal.syncOldFields();
 		}
+		configManager.setRSProfileConfiguration(HowManyMoreConfig.GROUP, GOALS_KEY, gson.toJson(goals));
 	}
 }

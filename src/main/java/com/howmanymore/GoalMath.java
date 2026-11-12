@@ -1,6 +1,12 @@
 package com.howmanymore;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import net.runelite.api.Experience;
 import net.runelite.api.Skill;
 import net.runelite.client.util.QuantityFormatter;
@@ -27,6 +33,53 @@ final class GoalMath
 			return -1;
 		}
 		return (int) Math.ceil(xpLeft / xpEach - EPSILON);
+	}
+
+	// -1 when the XP per hour isn't known yet.
+	static long millisLeft(int xpLeft, double xpPerHour)
+	{
+		if (xpPerHour <= 0)
+		{
+			return -1;
+		}
+		return (long) Math.ceil(xpLeft / xpPerHour * TimeUnit.HOURS.toMillis(1));
+	}
+
+	// "<1m", "45m", "3h 20m" or "2d 4h", rounded up to the minute.
+	static String formatDuration(long millis)
+	{
+		long minutes = (long) Math.ceil(millis / (double) TimeUnit.MINUTES.toMillis(1));
+		if (minutes < 1)
+		{
+			return "<1m";
+		}
+		if (minutes < 60)
+		{
+			return minutes + "m";
+		}
+		long hours = minutes / 60;
+		if (hours < 24)
+		{
+			return minutes % 60 == 0 ? hours + "h" : hours + "h " + minutes % 60 + "m";
+		}
+		return hours % 24 == 0 ? hours / 24 + "d" : hours / 24 + "d " + hours % 24 + "h";
+	}
+
+	// The time of day in the player's own format, like "9:40 PM", with the weekday when it isn't today.
+	static String formatClock(long atMillis, long nowMillis)
+	{
+		return formatClock(atMillis, nowMillis, ZoneId.systemDefault(), Locale.getDefault());
+	}
+
+	static String formatClock(long atMillis, long nowMillis, ZoneId zone, Locale locale)
+	{
+		ZonedDateTime at = Instant.ofEpochMilli(atMillis).atZone(zone);
+		String time = at.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale));
+		if (at.toLocalDate().equals(Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()))
+		{
+			return time;
+		}
+		return at.format(DateTimeFormatter.ofPattern("EEE", locale)) + " " + time;
 	}
 
 	static double progress(int startXp, int currentXp, int targetXp)

@@ -1,6 +1,10 @@
 package com.howmanymore;
 
 import static org.junit.Assert.assertEquals;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import net.runelite.api.Experience;
 import net.runelite.api.Skill;
 import org.junit.Test;
@@ -101,5 +105,36 @@ public class GoalMathTest
 		assertEquals(1_234.5, GoalMath.parseXpEach(" 1,234.5 "), 1e-9);
 		assertEquals(0, GoalMath.parseXpEach("abc"), 1e-9);
 		assertEquals(0, GoalMath.parseXpEach("-4"), 1e-9);
+	}
+
+	@Test
+	public void timesTheXpLeftAtTheHourlyRate()
+	{
+		assertEquals(TimeUnit.MINUTES.toMillis(90), GoalMath.millisLeft(90_000, 60_000));
+		assertEquals(0, GoalMath.millisLeft(0, 60_000));
+		assertEquals(-1, GoalMath.millisLeft(90_000, -1));
+	}
+
+	@Test
+	public void formatsTimeLeft()
+	{
+		assertEquals("<1m", GoalMath.formatDuration(0));
+		assertEquals("1m", GoalMath.formatDuration(TimeUnit.SECONDS.toMillis(20)));
+		assertEquals("45m", GoalMath.formatDuration(TimeUnit.MINUTES.toMillis(45)));
+		assertEquals("1h", GoalMath.formatDuration(TimeUnit.SECONDS.toMillis(59 * 60 + 30)));
+		assertEquals("3h 20m", GoalMath.formatDuration(TimeUnit.MINUTES.toMillis(200)));
+		assertEquals("1d", GoalMath.formatDuration(TimeUnit.HOURS.toMillis(24)));
+		assertEquals("5d 10h", GoalMath.formatDuration(TimeUnit.MINUTES.toMillis(130 * 60 + 5)));
+	}
+
+	@Test
+	public void formatsFinishTimeWithTheDayWhenItIsntToday()
+	{
+		ZoneId london = ZoneId.of("Europe/London");
+		long now = ZonedDateTime.of(2026, 11, 12, 19, 0, 0, 0, london).toInstant().toEpochMilli();
+		long tonight = now + TimeUnit.MINUTES.toMillis(160);
+		long tomorrow = now + TimeUnit.HOURS.toMillis(7);
+		assertEquals("21:40", GoalMath.formatClock(tonight, now, london, Locale.UK));
+		assertEquals("Fri 02:00", GoalMath.formatClock(tomorrow, now, london, Locale.UK));
 	}
 }
